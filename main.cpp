@@ -7,18 +7,40 @@
 #include <random>
 #include <sstream>
 #include <vector>
+#include <filesystem>
+#include <cstdlib>
 
-void loadData(std::vector<std::vector<int>>& vertex) {
-    std::ifstream file("data/15city.txt");
+namespace fs = std::filesystem;
+
+std::vector<std::string> getFilesInDirectory(const std::string& directory) {
+    std::vector<std::string> fileNames;
+
+    std::cout << "[dir: " << std::filesystem::current_path() << "]\n";
+
+    try {
+        for (const auto& entry : fs::directory_iterator(directory)) {
+            if (entry.is_regular_file()) {
+                fileNames.push_back(entry.path().filename().string());
+            }
+        }
+    } catch (fs::filesystem_error& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+    }
+
+    return fileNames;
+}
+
+void loadData(std::string filename, std::vector<std::vector<double>>& vertex) {
+    std::ifstream file(filename);
     if (!file.is_open()) {
         std::cerr << "Error: file not found" << std::endl;
         return;
     }
     std::string line;
     while (std::getline(file, line)) {
-        std::vector<int> row;
+        std::vector<double> row;
         std::istringstream iss(line);
-        int value;
+        double value;
         while (iss >> value) {
             row.push_back(value);
         }
@@ -68,7 +90,7 @@ void annihilationStep(const std::vector<std::vector<T>>& vertex,
             std::random_shuffle(path.begin(), path.end());
         }
         if (calculateCost(bestPath, vertex) > prevCost) {
-            std::cout << "new cost!" << std::endl;
+            std::cout << "\t>> new cost found: " << calculateCost(bestPath, vertex) << std::endl;
             bestPath = path;
         }
     }
@@ -154,26 +176,109 @@ void saveResult(std::vector<City> cities, std::vector<int> bestPath) {
     }
 }
 
+void clearConsole() {
+    // ANSI escape code to clear screen
+    std::cout << "\033[2J\033[1;1H";
+}
+
+void menuWrapperStart() {
+    clearConsole();
+    std::cout << "---------- MENU ----------\n";
+}
+
+void menuWrapperEnd() {
+    std::cout << "--------------------------\n\n";
+    std::cout << "Choose option: ";
+}
+
+void showMenu() {
+    menuWrapperStart();
+    std::cout << "1. Load from file\n";
+    std::cout << "2. Generate city data\n";
+    std::cout << "3. Exit\n";
+    menuWrapperEnd();
+}
+
+void showLoadFromFileMenu() {
+    menuWrapperStart();
+    std::cout << "1. Enter file name\n";
+    std::cout << "2. Choose file from /data directory\n";
+    std::cout << "3. Exit\n";
+    menuWrapperEnd();
+}
+
+void runVisualisation() {
+    system("python display.py");
+}
+
 int main() {
-    // MENU OPTION 1 -> Load from file
-    // Load data from file
-    // std::vector<std::vector<int>> intVertex;
-    // loadData(intVertex);
-    // END OPTION 1
-
-    // MENU OPTION 2 -> Generate city data
+    showMenu();
+    int option, size;
+    std::cin >> option;
     std::vector<City> cities;
-    int size = 10;
-    int max = 20;
-    // ADD CIN TO THIS TWO INTS
-    generateData(size, max, cities);
-    for (const auto& city : cities) {
-        std::cout << city.getX() << " " << city.getY() << std::endl;
-    }
     std::vector<std::vector<double>> vertex;
-    setVertex(cities, vertex);
-    // END OPTION 2
 
+    if (option == 3) {
+        return 0;
+    }
+
+    if (option != 1 && option != 2) {
+        std::cerr << "Error: invalid option" << std::endl;
+        return 1;
+    }
+
+    if (option == 1) {
+        showLoadFromFileMenu();
+        int subOption;
+        std::cin >> subOption;
+
+        if (subOption == 3) {
+            return 0;
+        }
+        if (subOption != 1 && subOption != 2) {
+            std::cerr << "Error: invalid option" << std::endl;
+            return 1;
+        }
+
+        if (subOption == 1) {
+            std::cout << "Enter the file path: ";
+            std::string fileName;
+            std::cin >> fileName;
+
+            loadData(fileName, vertex);
+        } else if (subOption == 2) {
+            menuWrapperStart();
+            std::vector<std::string> fileNames = getFilesInDirectory("data");
+
+            for (size_t i = 0; i < fileNames.size(); ++i) {
+                std::cout << i + 1 << ". " << fileNames[i] << std::endl;
+            }
+            menuWrapperEnd();
+
+            int fileIndex;
+            std::cin >> fileIndex;
+
+            if (fileIndex < 1 || fileIndex > fileNames.size()) {
+                std::cerr << "Error: invalid file index" << std::endl;
+                return 1;
+            }
+
+            loadData("data/" + fileNames[fileIndex - 1], vertex);
+            clearConsole();
+        }
+    } else if (option == 2) {
+        size = 10;
+        int max = 20;
+        generateData(size, max, cities);
+        std::cout << "--------------------------\n";
+        for (const auto& city : cities) {
+            std::cout << city.getX() << " " << city.getY() << std::endl;
+        }
+        std::cout << "--------------------------\n";
+        setVertex(cities, vertex);
+    }
+
+    std::cout << "--------------------------\n";
     std::cout << "Distance matrix:" << std::endl;
     for (const auto& row : vertex) {
         for (const auto& value : row) {
@@ -181,21 +286,31 @@ int main() {
         }
         std::cout << std::endl;
     }
+    std::cout << "--------------------------\n";
 
-    // Generate initial path and find best path using simulated annealing
     std::vector<int> path = initialGuess(size);
     std::vector<int> bestPath = path;
 
-    std::cout << "Initial guess: " << calculateCost<double>(path, vertex)
-              << std::endl;
+    std::cout << "Initial guess: " << calculateCost<double>(path, vertex) << std::endl;
+
     auto start = std::chrono::system_clock::now();
     beginAnnihilation(vertex, path, bestPath);
     auto end = std::chrono::system_clock::now();
+    
     std::chrono::duration<double> elapsed_seconds = end - start;
+
+    std::cout << "--------------------------\n";
     std::cout << "Time: " << elapsed_seconds.count() << "s" << std::endl;
     std::cout << "Final cost: " << calculateCost<double>(bestPath, vertex)
               << std::endl;
 
     saveResult(cities, bestPath);
+
+    if (option == 2) {
+        std::cout << "--------------------------\n";
+        std::cout << "Visualisation is starting..." << std::endl;
+        runVisualisation();
+    }
+
     return 0;
 }
