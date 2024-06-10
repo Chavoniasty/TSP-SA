@@ -267,8 +267,13 @@ int main() {
             clearConsole();
         }
     } else if (option == 2) {
-        size = 10;
-        int max = 20;
+        std::cout << "Enter the number of cities: ";
+        std::cin >> size;
+        
+        int max;
+        std::cout << "Enter the maximum value for x and y: ";
+        std::cin >> max;
+
         generateData(size, max, cities);
         std::cout << "--------------------------\n";
         for (const auto& city : cities) {
