@@ -1,23 +1,49 @@
+#include <omp.h>
+
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <random>
 #include <sstream>
 #include <vector>
 
-void loadData(std::vector<std::vector<int>>& vertex) {
-    std::ifstream file("data/42city.txt");
+namespace fs = std::filesystem;
+
+std::vector<std::string> getFilesInDirectory(const std::string& directory) {
+    std::vector<std::string> fileNames;
+
+    std::cout << "[dir: " << std::filesystem::current_path() << "]\n";
+
+    try {
+        for (const auto& entry : fs::directory_iterator(directory)) {
+            if (entry.is_regular_file()) {
+                fileNames.push_back(entry.path().filename().string());
+            }
+        }
+    } catch (fs::filesystem_error& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+    }
+
+    return fileNames;
+}
+
+void loadData(std::string filename, std::vector<std::vector<double>>& vertex) {
+    std::ifstream file(filename);
     if (!file.is_open()) {
         std::cerr << "Error: file not found" << std::endl;
         return;
     }
     std::string line;
     while (std::getline(file, line)) {
-        std::vector<int> row;
+        std::vector<double> row;
         std::istringstream iss(line);
-        int value;
+        double value;
         while (iss >> value) {
             row.push_back(value);
         }
@@ -25,91 +51,310 @@ void loadData(std::vector<std::vector<int>>& vertex) {
     }
 }
 
-int calculateCost(std::vector<int> permutation,
-                  std::vector<std::vector<int>> vertex) {
-    int cost = 0;
-    for (int i = 0; i < permutation.size() - 1; i++) {
+template <typename T>
+T calculateCost(const std::vector<int>& permutation,
+                const std::vector<std::vector<T>>& vertex) {
+    T cost = 0;
+    for (size_t i = 0; i < permutation.size() - 1; ++i) {
         cost += vertex[permutation[i]][permutation[i + 1]];
     }
-    cost += vertex[permutation[permutation.size() - 1]][permutation[0]];
+    cost += vertex[permutation.back()][permutation[0]];
     return cost;
 }
 
-std::vector<int> initialGuess(std::vector<std::vector<int>> vertex) {
-    std::vector<int> permutation;
-    for (int i = 0; i < vertex.size(); i++) {
-        permutation.push_back(i);
-    }
+std::vector<int> initialGuess(int size) {
+    std::vector<int> permutation(size);
+    std::iota(permutation.begin(), permutation.end(), 0);
     return permutation;
 }
 
-void annihilationStep(std::vector<std::vector<int>> vertex,
+template <typename T>
+void annihilationStep(const std::vector<std::vector<T>>& vertex,
                       std::vector<int>& path, std::vector<int>& bestPath,
-                      int temperature) {
+                      T temperature) {
     std::uniform_real_distribution<> dist(0.0, 1.0);
     std::random_device rd;
     std::mt19937 rng(rd());
     double probability = 0;
     bool acceptCondition = false;
-    int prevCost = calculateCost(path, vertex);
-    int currentCost = 0;
+    T prevCost = calculateCost(path, vertex);
+    T currentCost = 0;
     for (int i = 0; i < 100; i++) {
         std::random_shuffle(path.begin(), path.end());
-        // for (auto elem : path) {
-        //     std::cout << elem << " ";
-        // }
-        // std::cout << calculateCost(path, vertex);
-        // std::cout << std::endl;
         currentCost = calculateCost(path, vertex);
         if (currentCost > prevCost) {
-            probability = std::exp((prevCost - currentCost) / temperature);
-            bool acceptCondition = (dist(rng) < probability);
+            probability = std::exp(
+                static_cast<double>((prevCost - currentCost) / temperature));
+            acceptCondition = (dist(rng) < probability);
         }
-        if (currentCost <= prevCost or acceptCondition) {
+        if (currentCost <= prevCost || acceptCondition) {
             prevCost = currentCost;
         } else {
             std::random_shuffle(path.begin(), path.end());
         }
         if (calculateCost(bestPath, vertex) > prevCost) {
-            std::cout << "new cost!" << std::endl;
+            // std::cout << "\t>> new cost found: "
+            //           << calculateCost(bestPath, vertex) << std::endl;
             bestPath = path;
         }
     }
 }
 
-void beginAnnihilation(std::vector<std::vector<int>> vertex,
+template <typename T>
+void beginAnnihilation(const std::vector<std::vector<T>>& vertex,
                        std::vector<int>& path, std::vector<int>& bestPath) {
-    double temperature = 1000;
-    double alpha = 0.996;
-    for (int i = 0; i < 400; i++) {
-        annihilationStep(vertex, path, bestPath, temperature);
-        temperature = float(temperature * alpha);
+    T temperature = 1000;
+    std::array<T, 5> alpha = {static_cast<T>(0.90), static_cast<T>(0.92),
+                              static_cast<T>(0.94), static_cast<T>(0.96),
+                              static_cast<T>(0.98)};
+    std::vector<int> tempBestPath = bestPath;
+
+    for (int j = 0; j < 3; j++) {
+        std::cout << "Iteration " << j + 1 << std::endl;
+        std::cout << "Current best path cost: "
+                  << calculateCost(tempBestPath, vertex) << std::endl;
+        std::vector<std::vector<int>> allBestPaths(5);
+        omp_set_num_threads(5);
+#pragma omp parallel
+        {
+            int threadNum = omp_get_thread_num();
+            std::vector<int> localPath = path;
+            std::vector<int> localBestPath = tempBestPath;
+            T threadTemperature = temperature;
+
+            for (int i = 0; i < 400; i++) {
+                annihilationStep(vertex, localPath, localBestPath,
+                                 threadTemperature);
+                threadTemperature *= alpha[threadNum];
+            }
+
+#pragma omp critical
+            {
+                allBestPaths[threadNum] = localBestPath;
+                std::cout << "Thread " << threadNum << " finished with result: "
+                          << calculateCost(localBestPath, vertex)
+                          << " for temperature alpha: " << alpha[threadNum]
+                          << std::endl;
+            }
+        }
+#pragma omp barrier
+        tempBestPath = *std::min_element(
+            allBestPaths.begin(), allBestPaths.end(),
+            [&](const std::vector<int>& a, const std::vector<int>& b) {
+                return calculateCost(a, vertex) < calculateCost(b, vertex);
+            });
+    }
+    bestPath = tempBestPath;
+}
+
+class City {
+    int x;
+    int y;
+
+   public:
+    City(int tempX, int tempY) : x(tempX), y(tempY) {}
+    int getX() const { return x; }
+    int getY() const { return y; }
+};
+
+void generateData(int size, int max, std::vector<City>& cities) {
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::uniform_int_distribution<int> dist(0, max);
+
+    while (cities.size() < size) {
+        int x = dist(rng);
+        int y = dist(rng);
+        bool duplicate = false;
+
+        for (const auto& city : cities) {
+            if (x == city.getX() && y == city.getY()) {
+                duplicate = true;
+                break;
+            }
+        }
+
+        if (!duplicate) {
+            cities.emplace_back(x, y);
+        }
     }
 }
 
+template <typename T>
+T roundToTwoDecimalPlaces(double value) {
+    return static_cast<T>(std::round(value * 100.0) / 100.0);
+}
+
+template <typename T>
+void setVertex(const std::vector<City>& cities,
+               std::vector<std::vector<T>>& vertex) {
+    size_t size = cities.size();
+    vertex.resize(size, std::vector<T>(size, 0));
+
+    for (size_t i = 0; i < size; ++i) {
+        for (size_t j = 0; j < size; ++j) {
+            if (i != j) {
+                int deltaX = cities[i].getX() - cities[j].getX();
+                int deltaY = cities[i].getY() - cities[j].getY();
+                double distance = std::sqrt(deltaX * deltaX + deltaY * deltaY);
+                vertex[i][j] = roundToTwoDecimalPlaces<T>(distance);
+            }
+        }
+    }
+}
+
+void saveResult(std::vector<City> cities, std::vector<int> bestPath) {
+    std::ofstream file("result.txt");
+    if (!file.is_open()) {
+        std::cerr << "Error: file not found" << std::endl;
+        return;
+    }
+
+    for (size_t i = 0; i < bestPath.size(); ++i) {
+        file << cities[bestPath[i]].getX() << " " << cities[bestPath[i]].getY()
+             << std::endl;
+    }
+}
+
+void clearConsole() {
+    // ANSI escape code to clear screen
+    std::cout << "\033[2J\033[1;1H";
+}
+
+void menuWrapperStart() {
+    clearConsole();
+    std::cout << "---------- MENU ----------\n";
+}
+
+void menuWrapperEnd() {
+    std::cout << "--------------------------\n\n";
+    std::cout << "Choose option: ";
+}
+
+void showMenu() {
+    menuWrapperStart();
+    std::cout << "1. Load from file\n";
+    std::cout << "2. Generate city data\n";
+    std::cout << "3. Exit\n";
+    menuWrapperEnd();
+}
+
+void showLoadFromFileMenu() {
+    menuWrapperStart();
+    std::cout << "1. Enter file name\n";
+    std::cout << "2. Choose file from /data directory\n";
+    std::cout << "3. Exit\n";
+    menuWrapperEnd();
+}
+
+void runVisualisation() { system("python display.py"); }
+
 int main() {
-    std::vector<std::vector<int>> vertex;
-    loadData(vertex);
+    showMenu();
+    int option, size;
+    std::cin >> option;
+    std::vector<City> cities;
+    std::vector<std::vector<double>> vertex;
 
-    std::vector<int> path = initialGuess(vertex);
+    if (option == 3) {
+        return 0;
+    }
+
+    if (option != 1 && option != 2) {
+        std::cerr << "Error: invalid option" << std::endl;
+        return 1;
+    }
+
+    if (option == 1) {
+        showLoadFromFileMenu();
+        int subOption;
+        std::cin >> subOption;
+
+        if (subOption == 3) {
+            return 0;
+        }
+        if (subOption != 1 && subOption != 2) {
+            std::cerr << "Error: invalid option" << std::endl;
+            return 1;
+        }
+
+        if (subOption == 1) {
+            std::cout << "Enter the file path: ";
+            std::string fileName;
+            std::cin >> fileName;
+
+            loadData(fileName, vertex);
+        } else if (subOption == 2) {
+            menuWrapperStart();
+            std::vector<std::string> fileNames = getFilesInDirectory("data");
+
+            for (size_t i = 0; i < fileNames.size(); ++i) {
+                std::cout << i + 1 << ". " << fileNames[i] << std::endl;
+            }
+            menuWrapperEnd();
+
+            int fileIndex;
+            std::cin >> fileIndex;
+
+            if (fileIndex < 1 || fileIndex > fileNames.size()) {
+                std::cerr << "Error: invalid file index" << std::endl;
+                return 1;
+            }
+
+            loadData("data/" + fileNames[fileIndex - 1], vertex);
+            clearConsole();
+        }
+    } else if (option == 2) {
+        std::cout << "Enter the number of cities: ";
+        std::cin >> size;
+
+        int max;
+        std::cout << "Enter the maximum value for x and y: ";
+        std::cin >> max;
+
+        generateData(size, max, cities);
+        std::cout << "--------------------------\n";
+        for (const auto& city : cities) {
+            std::cout << city.getX() << " " << city.getY() << std::endl;
+        }
+        std::cout << "--------------------------\n";
+        setVertex(cities, vertex);
+    }
+
+    std::cout << "--------------------------\n";
+    std::cout << "Distance matrix:" << std::endl;
+    for (const auto& row : vertex) {
+        for (const auto& value : row) {
+            std::cout << std::fixed << std::setprecision(2) << value << " ";
+        }
+        std::cout << std::endl;
+    }
+    std::cout << "--------------------------\n";
+
+    std::vector<int> path = initialGuess(size);
     std::vector<int> bestPath = path;
-    // for (auto v : vertex) {
-    //     for (auto i : v) {
-    //         std::cout << i << " ";
-    //     }
-    //     std::cout << std::endl;
-    // }
 
-    std::cout << "Initial guess: " << calculateCost(path, vertex) << std::endl;
-    int start = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                    .count();
+    std::cout << "Initial guess: " << calculateCost<double>(path, vertex)
+              << std::endl;
+
+    auto start = std::chrono::system_clock::now();
     beginAnnihilation(vertex, path, bestPath);
-    int end = std::chrono::duration_cast<std::chrono::milliseconds>(
-                  std::chrono::system_clock::now().time_since_epoch())
-                  .count();
-    std::cout << "Time: " << end - start << std::endl;
-    std::cout << "Final cost: " << calculateCost(bestPath, vertex);
+    auto end = std::chrono::system_clock::now();
+
+    std::chrono::duration<double> elapsed_seconds = end - start;
+
+    std::cout << "--------------------------\n";
+    std::cout << "Time: " << elapsed_seconds.count() << "s" << std::endl;
+    std::cout << "Final cost: " << calculateCost<double>(bestPath, vertex)
+              << std::endl;
+
+    saveResult(cities, bestPath);
+
+    if (option == 2) {
+        std::cout << "--------------------------\n";
+        std::cout << "Visualisation is starting..." << std::endl;
+        runVisualisation();
+    }
 
     return 0;
 }
